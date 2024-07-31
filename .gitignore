@@ -1,0 +1,9 @@
+*.pyc
+.projectile
+.dir-locals.el
+.cache
+.coverage
+.eggs
+fslpy.egg-info
+htmlcov
+doc/html

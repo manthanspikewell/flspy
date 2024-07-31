@@ -1,0 +1,8 @@
+include           AUTHOR
+include           CHANGELOG.rst
+include           COPYRIGHT
+include           LICENSE
+include           README.rst
+include           conftest.py
+recursive-include doc       *
+recursive-include fsl/tests *

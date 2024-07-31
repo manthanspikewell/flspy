@@ -1,0 +1,295 @@
+#############################################################################
+# This file defines the build process for fslpy, as hosted at:
+#
+#    https://git.fmrib.ox.ac.uk/fsl/fslpy
+#
+# The build pipeline comprises the following stages:
+#
+#    1. test:   Unit tests
+#
+#    2. style:  Check coding style
+#
+#    3. doc:    Building and upload API documentation using GitLab Pages.
+#
+#    4. build:  Building source and wheel distributions
+#
+#    5. deploy: Uploading the build outputs to pypi/hosting servers.
+#
+#
+# Custom docker images are used for several jobs - these images are
+# available at:
+#
+#    https://hub.docker.com/u/pauldmccarthy/
+#
+# The test and style stages are executed on all branches of upstream and fork
+# repositories.
+#
+# The doc stage is executed on release branches of the upstream repository.
+#
+# The build and deploy stages are executed on tags on the upstream
+# repository, and the deploy stage must be manually instantiated.
+#
+# Most of the logic for each job is defined in shell scripts in the .ci
+# sub-directory.
+#############################################################################
+
+
+stages:
+ - test
+ - style
+ - doc
+ - build
+ - deploy
+
+
+#################################################################################
+# A number of variables must be set for the jobs to work. The following
+# variables are implicitly defined in any gitlab CI job:
+#
+#   - CI_PROJECT_PATH    - gitlab namespace/project
+#   - CI_COMMIT_REF_NAME - branch name, provided by gitlab
+#   - CI_COMMIT_TAG      - present if build is running on a tag
+#
+# These variables must be explicitly set as "secret" variables:
+#
+#   - SSH_PRIVATE_KEY_GIT            - private key for git login to remote host
+#                                      (UPSTREAM_URL)
+#
+#   - SSH_PRIVATE_KEY_FSL_DOWNLOAD   - private key for downloading some FSL
+#                                      files from a remote server (FSL_HOST)
+#
+#   - SSH_SERVER_HOSTKEYS            - List of trusted SSH hosts
+#
+#   - FSL_HOST:                      - Username@host to download FSL data from
+#                                      (most likely "paulmc@localhost")
+#
+#   - FSL_ATLAS_DIR:                 - Location of the FSL atlas data on
+#                                      FSL_HOST.
+#
+#   - TWINE_USERNAME:                - Username to use when uploading to pypi
+#
+#   - TWINE_PASSWORD:                - Password to use when uploading to pypi
+#
+#   - TWINE_REPOSITORY_URL:          - Pypi repository to upload to
+#
+#   - ZENODO_URL:                    - Zenodo URL to deposit release file to.
+#
+#   - ZENODO_TOKEN:                  - Zenodo access token.
+#
+#   - ZENODO_DEPOSIT_ID:             - Deposit ID of previous Zenodo deposit.
+###############################################################################
+
+
+variables:
+  UPSTREAM_PROJECT: "fsl/fslpy"
+  UPSTREAM_URL:     "git@git.fmrib.ox.ac.uk"
+
+
+####################################
+# These anchors are used to restrict
+# when and where jobs are executed.
+####################################
+
+
+.only_release_branches: &only_release_branches
+  only:
+    - /^v.+$/@fsl/fslpy
+
+
+.only_releases: &only_releases
+  only:
+    - tags@fsl/fslpy
+
+
+.setup_ssh: &setup_ssh
+  before_script:
+    - bash ./.ci/setup_ssh.sh
+
+
+###################################################
+# The check_version anchor contains a before_script
+# section which is run on release builds, and makes
+# sure that the version in the code is up to date
+# (i.e. equal to the tag name).
+###################################################
+
+
+.check_version: &check_version
+  before_script:
+    - bash ./.ci/check_version.sh
+
+
+############
+# Test stage
+############
+
+.test_rules: &test_rules
+  # We only run tests on MRs, and on release branches
+  # (a more substantial test suite is run on release
+  # branches - see .ci/test_template.sh). We don't run
+  # on upstream/main, as all merges are fast-forwards,
+  # so the tests will have already been run on the MR
+  # branch. We also allow manually running a pipeline
+  # via the web interface.
+  rules:
+    - if:   $SKIP_TESTS != null
+      when: never
+    - if:   $CI_COMMIT_MESSAGE =~ /\[skip-tests\]/
+      when: never
+    - if:   $CI_PIPELINE_SOURCE == "merge_request_event"
+      when: on_success
+    - if:   $CI_PROJECT_PATH == $UPSTREAM_PROJECT && $CI_COMMIT_BRANCH =~ /^v.+$/
+      when: on_success
+    - if:   $CI_PIPELINE_SOURCE == "web"
+      when: on_success
+    - when: never
+
+
+.test: &test_template
+  <<: *setup_ssh
+  <<: *test_rules
+
+  tags:
+    - docker
+
+  script:
+    - bash ./.ci/test_template.sh
+
+
+test:3.9:
+  stage: test
+  image: pauldmccarthy/fsleyes-py39-wxpy4-gtk3
+  <<: *test_template
+
+
+test:3.10:
+  stage: test
+  image: pauldmccarthy/fsleyes-py310-wxpy4-gtk3
+  <<: *test_template
+
+
+test:3.11:
+  stage: test
+  image: pauldmccarthy/fsleyes-py311-wxpy4-gtk3
+  <<: *test_template
+
+
+test:3.12:
+  stage: test
+  image: pauldmccarthy/fsleyes-py312-wxpy4-gtk3
+  <<: *test_template
+
+
+test:build-pypi-dist:
+  stage: test
+  image: python:3.10
+  <<: *test_rules
+
+  tags:
+    - docker
+
+  script:
+   - bash ./.ci/build_pypi_dist.sh
+
+
+#############
+# Style stage
+#############
+
+
+style:
+  stage: style
+  image: pauldmccarthy/fsleyes-py310-wxpy4-gtk3
+  <<: *test_template
+  variables:
+    TEST_STYLE:  "true"
+
+
+#############
+# Pages stage
+#############
+
+# I would like to have separate doc deploys for
+# both the main and latest release branches,
+# but this is awkward with gitlab pages. So
+# currently the most recently executed pages
+# job is the one that gets deployed.
+
+pages:
+  <<: *only_release_branches
+
+  tags:
+   - docker
+
+  stage: doc
+  image: pauldmccarthy/fsleyes-py310-wxpy4-gtk3
+
+  script:
+    - bash ./.ci/build_doc.sh
+
+  artifacts:
+    paths:
+      - public
+
+
+#############
+# Build stage
+#############
+
+
+build-pypi-dist:
+  <<: *only_releases
+  <<: *check_version
+
+  stage: build
+  image: python:3.10
+
+  tags:
+    - docker
+
+  script:
+   - bash ./.ci/build_pypi_dist.sh
+
+  artifacts:
+    expire_in: 1 day
+    paths:
+      - dist/*
+
+
+##############
+# Deploy stage
+##############
+
+
+deploy-pypi:
+  <<: *only_releases
+  <<: *setup_ssh
+  stage: deploy
+  when:  manual
+  image: python:3.10
+
+  tags:
+    - docker
+
+  dependencies:
+    - build-pypi-dist
+
+  script:
+    - bash ./.ci/deploy_pypi.sh
+
+
+deploy-zenodo:
+  <<: *only_releases
+  <<: *setup_ssh
+  stage: deploy
+  when:  manual
+  image: python:3.10
+
+  tags:
+    - docker
+
+  dependencies:
+    - build-pypi-dist
+
+  script:
+    - bash ./.ci/zenodo_deposit.sh "$ZENODO_URL" "$ZENODO_TOKEN" "$ZENODO_DEPOSIT_ID"

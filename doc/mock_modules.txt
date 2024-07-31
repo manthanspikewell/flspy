@@ -1,0 +1,13 @@
+deprecation
+dill
+h5py
+nibabel
+nibabel.cifti2
+nibabel.fileslice
+nibabel.freesurfer
+numpy
+numpy.linalg
+scipy
+scipy.ndimage
+scipy.ndimage.interpolation
+six
